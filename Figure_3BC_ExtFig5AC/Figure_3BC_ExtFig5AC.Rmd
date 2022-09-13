@@ -1,0 +1,226 @@
+---
+title: "Vglut3 IP vs input and vs GENSAT (unpublished have been excluded)"
+author: "Doug Barrows"
+date: "12/14/2020"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, cache = TRUE, message = FALSE)
+```
+
+```{r}
+library(DESeq2)
+library(dplyr)
+library(pheatmap)
+library(ggplot2)
+library(ggrepel)
+library(ComplexHeatmap)
+library(GSVA)
+library(circlize)
+library(metap)
+
+```
+
+## load in the published Vglut3 IP vs Input data
+```{r}
+
+id2symbol <- read.delim("org.Mm.eg_ID2Symbol.txt")
+
+load("pub_Vglut3_v_input_dds.rds")
+Vglut_dds <- dds
+Vglut_dds_IP <- Vglut_dds[, 4:6]
+counts_Vglut_IP <- counts(Vglut_dds_IP)
+
+```
+## make figures of IP vs input
+
+### first do fold change vs -log10(pvalue) highlighting key genes
+
+```{r}
+counts_allsamples <- counts(Vglut_dds)
+counts_withSymbol <- merge(id2symbol,counts_allsamples,by.x=1, by.y = 0,all.x=FALSE,all.y=TRUE)
+
+# make IP vs Input figure 
+resultsNames(Vglut_dds)
+res_Vglut <- results(Vglut_dds, name = "Group_IP_vs_input") %>%
+  as.data.frame() %>%
+  merge(id2symbol, . ,by.x=1, by.y = 0,all.x=FALSE,all.y=TRUE) %>%
+  na.omit() %>%
+  arrange(desc(stat))
+
+
+res_Vglut$color_col <- ifelse(abs(res_Vglut$log2FoldChange) > 1, "sig", "ns")
+res_Vglut$color_col <- as.factor(ifelse(res_Vglut$Symbols %in% c("Hcrtr1", "Gpr4", "Calcr"), "goi", res_Vglut$color_col))
+res_Vglut$color_col <- ordered(res_Vglut$color_col, levels = c("ns", "sig", "goi"))
+
+res_Vglut$goi <- ifelse(res_Vglut$Symbols %in% c("Hcrtr1", "Gpr4", "Calcr"), TRUE, FALSE)
+                                        
+res_Vglut_toPlot <- arrange(res_Vglut, goi) 
+
+# plot for Extended Figure 5B
+ggplot(res_Vglut_toPlot, aes(x = log2FoldChange, y = -log10(padj), color = goi, label = Symbols)) + 
+  geom_point() + 
+  scale_color_manual(values = c("gray", "red")) + 
+  theme_classic() + 
+  scale_y_continuous(expand = c(0, 0), limits = c(0, NA)) +
+  geom_text_repel(data = subset(res_Vglut_toPlot, goi),
+                  show.legend = FALSE,
+                  force        = 1,
+                  nudge_x      = 5,
+                  direction    = "y",
+                  hjust        = 1,
+                  segment.size = 0.5
+                  ) +
+  ggtitle("Vglut3 TRAP vs input") + 
+  xlab("log2FoldChange") + 
+  ylab("-log10(p-adjusted)") + 
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = "none")
+
+```
+
+# make pca and heatmap for Vglut3 IP vs input
+
+```{r}
+Vglut_dds_rlog <- rlog(Vglut_dds)
+pca <- plotPCA(Vglut_dds_rlog, intgroup = "Group", ntop = 1e6) +
+  theme_classic()
+# pca plot in Entended Figure 5A
+pca
+
+res_Vglut_sig <- res_Vglut[abs(res_Vglut$log2FoldChange) > 1 & res_Vglut$padj < 0.05, ]
+res_Vglut_sig_genes <- res_Vglut_sig$IDs
+rlog_sig <- assays(Vglut_dds_rlog)[[1]][rownames(assays(Vglut_dds_rlog)[[1]]) %in% res_Vglut_sig_genes, ]
+
+# heatmap for Figure 3B
+pheatmap::pheatmap(rlog_sig, annotation_col = as.data.frame(colData(Vglut_dds_rlog)), scale = "row", show_rownames = FALSE)
+```
+
+
+## Differential expression of Vglut IP vs rest of GENSAT
+
+
+### do differential expression for Vglut vs each other experiment
+
+```{r}
+
+# dds for Vglut samples vs all other samples in the GENSAT database
+combined_dds_byHeintz <- readRDS("combined_dds_byHeintz_NoUnPub_VglutRef.rds")
+
+pval_df <- data.frame(row.names = rownames(combined_dds_byHeintz))
+l2fc_df <- data.frame(row.names = rownames(combined_dds_byHeintz))
+for (i in 2:length(resultsNames(combined_dds_byHeintz))){
+
+  res <- results(combined_dds_byHeintz, name = resultsNames(combined_dds_byHeintz)[i]) %>%
+    as.data.frame() %>%
+    na.omit()
+  
+  res_padj <- dplyr::select(res, pvalue)
+  colnames(res_padj)[1] <- resultsNames(combined_dds_byHeintz)[i]
+  pval_df <- merge(pval_df, res_padj, by = 0) %>%
+    na.omit()
+  rownames(pval_df) <- pval_df$Row.names
+  pval_df <- pval_df[,-1, drop = FALSE]
+  
+  res_l2fc <- dplyr::select(res, log2FoldChange)
+  res_l2fc$log2FoldChange <- -1* res_l2fc$log2FoldChange # we used Vglut as the reference, and we will want to have the other was (vglut/other type)
+  # we had to set it up this way so that we could get the vglut comparison agaisnt everyhting else
+  colnames(res_l2fc)[1] <- resultsNames(combined_dds_byHeintz)[i]
+  l2fc_df <- merge(l2fc_df, res_l2fc, by = 0) %>%
+    na.omit()
+  rownames(l2fc_df) <- l2fc_df$Row.names
+  l2fc_df <- l2fc_df[,-1, drop = FALSE]
+  
+}
+
+# get combined p value using fisher combined method 
+pval_combine <- pval_df %>%
+  as.matrix %>%
+  apply(MARGIN = 1,
+        FUN = sumlog) 
+
+pval_combine_p <- lapply(pval_combine, function(x) x$p) %>%
+  unlist %>%
+  data.frame(row.names = names(.), combined_p = .)
+
+
+# get mean l2fc
+l2fc_df_mean <- data.frame(row.names = rownames(l2fc_df), mean_l2fc = rowMeans(l2fc_df))
+
+
+# use the chi squared stat for plotting
+pval_combine_chisq <- lapply(pval_combine, function(x) x$chisq) %>%
+  unlist %>%
+  data.frame(row.names = names(.), combined_chisq = .)
+
+pval_combine_chisq_withSymbol <- merge(id2symbol,pval_combine_chisq,by.x=1, by.y = 0,all.x=FALSE,all.y=TRUE)
+
+combinedChisq_l2fcMean_df <- merge(pval_combine_chisq_withSymbol, l2fc_df_mean, by.x = 1, by.y = 0)
+combinedChisq_l2fcMean_df[combinedChisq_l2fcMean_df$Symbols %in% c("Hcrtr1", "Gpr4", "Calcr"), ]
+
+combinedChisq_l2fcMean_df$goi <- ifelse(combinedChisq_l2fcMean_df$Symbols %in% c("Hcrtr1", "Gpr4", "Calcr"), TRUE, FALSE)
+filter(combinedChisq_l2fcMean_df, goi)
+
+combinedChisq_l2fcMean_df <- arrange(combinedChisq_l2fcMean_df, goi) 
+
+# plot for Extended Figure 5C - all genes, coloring those of interest
+ggplot(combinedChisq_l2fcMean_df, aes(x = mean_l2fc, y = combined_chisq, color = goi, label = Symbols)) + 
+  geom_point() + 
+  scale_color_manual(values = c("gray", "red")) + 
+  theme_classic() + 
+  geom_text_repel(data = subset(combinedChisq_l2fcMean_df, goi),
+                  show.legend = FALSE) +
+  ggtitle("Vglut3 TRAP vs GENSAT") + 
+  xlab("Mean log2FoldChange") + 
+  ylab("Combined Fisher - chi squared") +
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = "none")
+
+
+# read in receptor GO category
+#GO:0038023 - signaling receptor activity
+
+receptor_GO <- read.delim("GO_term_20201217_GO-0038023_signal_receptor_activity.txt", row.names = NULL)
+receptor_GO_gene <- receptor_GO$MGI.Gene.Marker.ID
+receptor_GO_gene <- receptor_GO_gene[!duplicated(receptor_GO_gene)]
+receptor_GO_gene_o <- receptor_GO_gene[grepl("Olf", receptor_GO_gene)]
+combinedChisq_l2fcMean_df_receptro <- combinedChisq_l2fcMean_df[combinedChisq_l2fcMean_df$Symbols %in% receptor_GO_gene, ]
+
+head(combinedChisq_l2fcMean_df_receptro[order(combinedChisq_l2fcMean_df_receptro$mean_l2fc, decreasing = TRUE), ], 30)
+
+# overlap singaling receptro with plasma membrane (GO-0005886)
+plasma_mem <- read.delim("GO_term_plasma_membrane_GO-0005886_20201221.txt", row.names = NULL)
+plasma_mem_gene <- plasma_mem$MGI.Gene.Marker.ID
+plasma_mem_gene <- plasma_mem_gene[!duplicated(plasma_mem_gene)]
+
+receptor_pm_overlap <- receptor_GO_gene[receptor_GO_gene %in% plasma_mem_gene]
+
+combinedChisq_l2fcMean_df_overlap <- combinedChisq_l2fcMean_df[combinedChisq_l2fcMean_df$Symbols %in% receptor_pm_overlap, ]
+
+head(combinedChisq_l2fcMean_df_overlap[order(combinedChisq_l2fcMean_df_overlap$mean_l2fc, decreasing = TRUE), ], 30)
+
+
+# plot in Figure 3C where we look at only the genes in these GO groups and highlight those of interest
+ggplot(combinedChisq_l2fcMean_df_overlap, aes(x = mean_l2fc, y = combined_chisq, color = goi, label = Symbols)) + 
+  geom_point() + 
+  scale_color_manual(values = c("gray", "red")) + 
+  theme_classic() + 
+  geom_text_repel(data = subset(combinedChisq_l2fcMean_df_overlap, goi),
+                  show.legend = FALSE) + 
+  ggtitle("Vglut3 TRAP vs GENSAT \n Overlap of Signaling Receptor Activity \n  and Plasma Membrane Gene Ontology") + 
+  xlab("Mean log2FoldChange") + 
+  ylab("Combined Fisher - chi squared") +
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = "none")
+
+
+```
+
+```{r}
+sessionInfo()
+```
+
+

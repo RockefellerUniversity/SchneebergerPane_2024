@@ -1,0 +1,128 @@
+---
+title: "Untitled"
+author: "Doug Barrows"
+date: "12/8/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(DESeq2)
+library(dplyr)
+library(pheatmap)
+library(Rtsne)
+library(ggplot2)
+library(ComplexHeatmap)
+library(GSVA)
+library(circlize)
+
+
+```
+
+
+# combine reps based on experiment
+
+```{r}
+
+# read in dds with counts for GENSAT and Vglut3 dataset
+combined_dds <- readRDS("combined_dds_GENSAT_Vglut3.rds")
+
+combined_dds_collapse <- collapseReplicates(combined_dds, groupby = colData(combined_dds)$Hentz_Group)
+combined_dds_collapse_vst <- vst(combined_dds_collapse)
+combined_dds_collapse_vst_mat <- assays(combined_dds_collapse_vst)[[1]]
+
+id2symbol <- read.delim("org.Mm.eg_ID2Symbol.txt")
+
+combined_dds_collapse_vst_mat_merge <- merge(id2symbol,combined_dds_collapse_vst_mat,by.x=1, by.y = 0,all.x=FALSE,all.y=TRUE)
+combined_dds_collapse_vst_mat_merge <- combined_dds_collapse_vst_mat_merge[,-1] %>% # we want ot make symbols rownames so firest remove IDs
+  na.omit()
+rownames(combined_dds_collapse_vst_mat_merge) <- combined_dds_collapse_vst_mat_merge$Symbols
+combined_dds_collapse_vst_mat_merge <- combined_dds_collapse_vst_mat_merge[, -1]
+
+#### make heatmap with just genes of interest 
+goi_combined <- combined_dds_collapse_vst_mat_merge[rownames(combined_dds_collapse_vst_mat_merge) %in% c("Gpr4", "Calcr", "Hcrtr1"), ]
+
+anno_col <- colData(combined_dds_collapse)[, 1, drop = FALSE] %>% as.data.frame()
+
+# add other annotations in the name of each sample
+Heintz_group_split <- strsplit(colData(combined_dds_collapse)$Hentz_Group, split = "_")
+Heintz_group_df <- do.call(rbind, Heintz_group_split) %>% as.data.frame()
+colnames(Heintz_group_df) <- c("TRAP driver line", "Cell_type", "Method", "Brain_region", "Person")
+
+# after talking with Eli, there are a few cell types we can combine/simplify
+Heintz_group_df$Cell_type <- gsub("interneuron..other", "interneuron", Heintz_group_df$Cell_type)
+Heintz_group_df$Cell_type <- gsub("l2.3.pyramidal", "pyramidal", Heintz_group_df$Cell_type)
+Heintz_group_df$Cell_type <- gsub("na", "pyramidal", Heintz_group_df$Cell_type)
+Heintz_group_df$Cell_type <- gsub("pyramidal.", "pyramidal", Heintz_group_df$Cell_type)
+Heintz_group_df$Cell_type <- gsub("mixed..neuropyramidal.types", "mixed neuronal population", Heintz_group_df$Cell_type)
+Heintz_group_df$Cell_type <- gsub("\\.neuron", "", Heintz_group_df$Cell_type)
+Heintz_group_df$Cell_type <- gsub("\\.", " ", Heintz_group_df$Cell_type)
+
+
+# we also dont really care about 'person' or 'method' for the figure 
+Heintz_group_df <- dplyr::select(Heintz_group_df, -Method, -Person)
+anno_col_2 <- cbind(anno_col, Heintz_group_df)
+
+# add gsva
+
+gene_set <- list(combined_goi_gsva = c("Gpr4", "Calcr", "Hcrtr1"))
+
+goi_gsva <- gsva(as.matrix(combined_dds_collapse_vst_mat_merge), gene_set)
+goi_gsva_df <- t(goi_gsva) %>% as.data.frame()
+
+identical(colnames(goi_combined), colnames(goi_gsva))
+
+goi_combined_withGSVA <- rbind(goi_combined, goi_gsva)
+
+
+##########
+# make similar plot with complex heatmap
+# this will allow more control over the gsva annotation
+
+goi_combined_scale <- t(scale(t(goi_combined)))
+
+colAnno <- HeatmapAnnotation(df = anno_col_2[c(-2,-6)])
+
+ann_colors = list(
+    combined_goi_gsva = colorRamp2(c(min(goi_gsva_df$combined_goi_gsva), 0, max(goi_gsva_df$combined_goi_gsva)),
+                             c("blue", "white", "red"))
+)
+
+
+
+set.seed(1234)
+htk_gsva_leg <- ComplexHeatmap::Heatmap(goi_combined_scale,
+                                  show_row_names = TRUE,
+                                  show_column_names = FALSE,
+                                  cluster_columns = TRUE,
+                                  top_annotation = HeatmapAnnotation(df = anno_col_2,
+                                                                     show_legend = TRUE),
+                                  bottom_annotation = HeatmapAnnotation(df = goi_gsva_df, 
+                                                                        col = ann_colors,
+                                                                        annotation_legend_param = list(title = paste("combined_goi", 
+                                                                                                                          "GSVA", 
+                                                                                                                          sep = "\n"),
+                                                                                                       direction = "vertical")
+                                                                        ),
+                                  heatmap_legend_param = list(title = paste("Indiv_goi", "Zscore", sep = "\n"),
+                                                              direction = "vertical")
+                                  )
+
+htk_leg <- draw(htk_gsva_leg)
+
+
+
+```
+
+
+
+
+
+```{r}
+sessionInfo()
+```
+
+
