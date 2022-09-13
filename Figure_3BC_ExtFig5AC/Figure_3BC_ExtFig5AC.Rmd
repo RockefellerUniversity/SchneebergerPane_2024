@@ -105,11 +105,31 @@ pheatmap::pheatmap(rlog_sig, annotation_col = as.data.frame(colData(Vglut_dds_rl
 
 ### do differential expression for Vglut vs each other experiment
 
+
+make dds for combined data
 ```{r}
+ # make combined dds for gensat and vglut3
+counts_gensat <- readRDS("counts_gensat_excl_unpub.rds")
+coldata_gensat <- readRDS("coldata_gensat_excl_unpub.rds")
+combined_counts <- cbind(counts_Vglut_IP, counts_gensat)
+
+# coldata for our eventual dds object
+colData_combined <- data.frame(row.names = colnames(combined_counts), 
+                          Vglut = c(rep("Vglut", 3), rep("Heintz", ncol(combined_counts) - 3)), 
+                          Hentz_Group = c(rep("Vglut", 3), as.character(coldata_gensat$Group)))
+
+combined_dds <- DESeqDataSetFromMatrix(combined_counts, colData = colData_combined, design = ~Vglut)
+
+combined_dds_byHeintz <- DESeqDataSet(combined_dds, ~Hentz_Group)
+
+colData(combined_dds_byHeintz)$Hentz_Group <- relevel(colData(combined_dds_byHeintz)$Hentz_Group, ref = "Vglut")
 
 # dds for Vglut samples vs all other samples in the GENSAT database
-combined_dds_byHeintz <- readRDS("combined_dds_byHeintz_NoUnPub_VglutRef.rds")
+combined_dds_byHeintz <- DESeq(combined_dds_byHeintz)
+```
 
+make figures
+```{r}
 pval_df <- data.frame(row.names = rownames(combined_dds_byHeintz))
 l2fc_df <- data.frame(row.names = rownames(combined_dds_byHeintz))
 for (i in 2:length(resultsNames(combined_dds_byHeintz))){
